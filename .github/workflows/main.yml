@@ -1,84 +1,43 @@
-const { createClient } = require('@supabase/supabase-js');
-const fetch = require('node-fetch');
+name: Sincronizador Automático
+on:
+  schedule:
+    - cron: '0 * * * *' # Se ejecuta cada hora
+  workflow_dispatch: # Permite ejecutarlo manualmente
+jobs:
+  sync-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Descargando código del repo
+        uses: actions/checkout@v3
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const FINA_TOKEN = process.env.FINA_TOKEN;
+      - name: 2. Diagnóstico (Ver archivos)
+        run: |
+          echo "📍 Listando todos los archivos para encontrar el error:"
+          ls -R
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+      - name: 3. Instalando Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
 
-async function sincronizarInventario() {
-  console.log("🚀 Iniciando sincronización de depuración...");
-
-  try {
-    const pageSize = 50;
-    const totalPaginas = 1; // Probemos primero con 1 página para diagnosticar
-
-    for (let pagina = 1; pagina <= totalPaginas; pagina++) {
-      console.log(`📡 Consultando Fina - Página ${pagina}...`);
-
-      const url = `https://api.finapartner.com/api/inventory?currentPage=${pagina}&pageSize=${pageSize}&sortedColumn=updatedAt&sortedDirection=desc`;
-
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'X-Access-Token': FINA_TOKEN,
-          'Accept': 'application/json',
-          'Origin': 'https://bbtiendadelicores.finapartner.com',
-          'Referer': 'https://bbtiendadelicores.finapartner.com/'
-        }
-      });
-
-      if (!response.ok) {
-        console.error(`❌ Error de Red Fina: ${response.status} ${response.statusText}`);
-        return;
-      }
-
-      const json = await response.json();
-      
-      // LOG DE DIAGNÓSTICO: ¿Qué nos trae Fina?
-      console.log(`📦 Productos recibidos de Fina: ${json.data ? json.data.length : 0}`);
-      
-      if (!json.data || json.data.length === 0) {
-        console.log("⚠️ Fina no devolvió productos. Revisa si el TOKEN sigue vigente.");
-        return;
-      }
-
-      const canalPrincipal = json.salesChannels?.find(c => c.name === "Principal");
-      if (!canalPrincipal) {
-        console.log("⚠️ No se encontró el canal 'Principal'. Canales disponibles:", json.salesChannels?.map(c => c.name));
-      }
-
-      const updates = json.data.map(prod => {
-        const precioInfo = canalPrincipal?.items?.find(i => i.referenceId === prod._id);
-        return {
-          fina_id: prod._id,
-          nombre: prod.name,
-          stock: prod.amount || 0,
-          precio_usd: precioInfo ? precioInfo.sellingPrice : 0,
-          categoria_nombre: prod.category || 'Varios',
-          actualizado_en: new Date().toISOString()
-        };
-      });
-
-      console.log(`📤 Intentando subir ${updates.length} productos a Supabase...`);
-
-      // LOG DE DIAGNÓSTICO: Resultado de Supabase
-      const { data, error } = await supabase
-        .from('productos')
-        .upsert(updates, { onConflict: 'fina_id' })
-        .select(); // Pedimos que nos devuelva lo que insertó para confirmar
-
-      if (error) {
-        console.error("❌ ERROR EN SUPABASE:", error);
-      } else {
-        console.log(`✅ ¡Éxito! Se procesaron ${data.length} filas en la base de datos.`);
-      }
-    }
-
-  } catch (error) {
-    console.error("💥 ERROR CRÍTICO:", error.message);
-  }
-}
-
-sincronizarInventario();
+      - name: 4. Localizar y Ejecutar Sincronización
+        run: |
+          # Buscamos el archivo sync.js ignorando node_modules
+          FILE_PATH=$(find . -name "sync.js" -not -path "*/node_modules/*" | head -n 1)
+          
+          if [ -z "$FILE_PATH" ]; then
+            echo "❌ ERROR: No se encontró el archivo sync.js en el repositorio."
+            exit 1
+          fi
+          
+          # Obtenemos la carpeta donde está el archivo
+          DIR_PATH=$(dirname "$FILE_PATH")
+          echo "📂 Archivo encontrado en: $FILE_PATH"
+          
+          cd "$DIR_PATH"
+          npm install
+          node $(basename "$FILE_PATH")
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FINA_TOKEN: ${{ secrets.FINA_TOKEN }}
