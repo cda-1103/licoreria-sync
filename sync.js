@@ -1,32 +1,28 @@
 const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch');
 
-// Estos valores se cargan desde los "Secrets" de tu repositorio en GitHub
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const FINA_TOKEN = process.env.FINA_TOKEN;
 
-// Inicializamos el cliente de Supabase
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function sincronizarInventario() {
-  console.log("🚀 Iniciando proceso de sincronización...");
+  console.log("🚀 Iniciando sincronización de depuración...");
 
   try {
-    // Definimos cuántos productos queremos por página (según tu captura, usas 50)
     const pageSize = 50;
-    const totalPaginas = 9; // Para cubrir tus ~431 productos
+    const totalPaginas = 1; // Probemos primero con 1 página para diagnosticar
 
     for (let pagina = 1; pagina <= totalPaginas; pagina++) {
-      console.log(`📦 Sincronizando página ${pagina} de ${totalPaginas}...`);
+      console.log(`📡 Consultando Fina - Página ${pagina}...`);
 
-      // URL exacta basada en tu captura de pantalla
       const url = `https://api.finapartner.com/api/inventory?currentPage=${pagina}&pageSize=${pageSize}&sortedColumn=updatedAt&sortedDirection=desc`;
 
       const response = await fetch(url, {
         method: 'GET',
         headers: {
-          'X-Access-Token': FINA_TOKEN, // Usamos el nombre exacto de tu captura
+          'X-Access-Token': FINA_TOKEN,
           'Accept': 'application/json',
           'Origin': 'https://bbtiendadelicores.finapartner.com',
           'Referer': 'https://bbtiendadelicores.finapartner.com/'
@@ -34,50 +30,54 @@ async function sincronizarInventario() {
       });
 
       if (!response.ok) {
-        throw new Error(`Error en Fina (Status ${response.status}): ${response.statusText}`);
+        console.error(`❌ Error de Red Fina: ${response.status} ${response.statusText}`);
+        return;
       }
 
       const json = await response.json();
       
-      if (!json.data || !json.salesChannels) {
-        console.log(`⚠️ La página ${pagina} no devolvió datos válidos.`);
-        continue;
+      // LOG DE DIAGNÓSTICO: ¿Qué nos trae Fina?
+      console.log(`📦 Productos recibidos de Fina: ${json.data ? json.data.length : 0}`);
+      
+      if (!json.data || json.data.length === 0) {
+        console.log("⚠️ Fina no devolvió productos. Revisa si el TOKEN sigue vigente.");
+        return;
       }
 
-      // Localizamos el canal de ventas "Principal" para obtener los precios correctos
-      const canalPrincipal = json.salesChannels.find(c => c.name === "Principal");
+      const canalPrincipal = json.salesChannels?.find(c => c.name === "Principal");
+      if (!canalPrincipal) {
+        console.log("⚠️ No se encontró el canal 'Principal'. Canales disponibles:", json.salesChannels?.map(c => c.name));
+      }
 
       const updates = json.data.map(prod => {
-        // Buscamos el precio en el canal principal usando el ID de referencia
-        const precioInfo = canalPrincipal.items.find(i => i.referenceId === prod._id);
-        
+        const precioInfo = canalPrincipal?.items?.find(i => i.referenceId === prod._id);
         return {
-          fina_id: prod._id, // ID único de Fina
+          fina_id: prod._id,
           nombre: prod.name,
-          stock: prod.amount,
+          stock: prod.amount || 0,
           precio_usd: precioInfo ? precioInfo.sellingPrice : 0,
-          categoria_nombre: prod.category || 'Sin categoría',
+          categoria_nombre: prod.category || 'Varios',
           actualizado_en: new Date().toISOString()
         };
       });
 
-      // Operación Upsert: Si el fina_id ya existe, actualiza; si no, inserta.
-      const { error } = await supabase
+      console.log(`📤 Intentando subir ${updates.length} productos a Supabase...`);
+
+      // LOG DE DIAGNÓSTICO: Resultado de Supabase
+      const { data, error } = await supabase
         .from('productos')
-        .upsert(updates, { onConflict: 'fina_id' });
+        .upsert(updates, { onConflict: 'fina_id' })
+        .select(); // Pedimos que nos devuelva lo que insertó para confirmar
 
       if (error) {
-        console.error(`❌ Error en Supabase (Pág ${pagina}):`, error.message);
+        console.error("❌ ERROR EN SUPABASE:", error);
       } else {
-        console.log(`✅ Página ${pagina} procesada con éxito.`);
+        console.log(`✅ ¡Éxito! Se procesaron ${data.length} filas en la base de datos.`);
       }
     }
 
-    console.log("🏁 Proceso terminado. Tu inventario está al día.");
-
   } catch (error) {
-    console.error("💥 Error crítico durante la sincronización:", error.message);
-    process.exit(1);
+    console.error("💥 ERROR CRÍTICO:", error.message);
   }
 }
 
