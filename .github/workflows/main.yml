@@ -1,0 +1,26 @@
+name: Sincronizador Automático
+on:
+  schedule:
+    - cron: '0 * * * *' # Se ejecuta automáticamente cada hora (minuto 0)
+  workflow_dispatch: # Esto activa un botón para que tú lo corras cuando quieras
+jobs:
+  sync-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargando código del repo
+        uses: actions/checkout@v3
+
+      - name: Instalando Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Instalando librerías
+        run: npm install
+
+      - name: Ejecutando el script de sincronización
+        run: node sync.js
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FINA_TOKEN: ${{ secrets.FINA_TOKEN }}
