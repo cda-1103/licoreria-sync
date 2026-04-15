@@ -1,13 +1,13 @@
 name: Sincronizador Automático
 on:
   schedule:
-    - cron: '0 * * * *' # Se ejecuta automáticamente cada hora (minuto 0)
-  workflow_dispatch: # Esto activa un botón para que tú lo corras cuando quieras
+    - cron: '0 * * * *'
+  workflow_dispatch:
 jobs:
   sync-job:
     runs-on: ubuntu-latest
     steps:
-      - name: Descargando código del repo
+      - name: Descargando código
         uses: actions/checkout@v3
 
       - name: Instalando Node.js
@@ -15,11 +15,22 @@ jobs:
         with:
           node-version: 18
 
-      - name: Instalando librerías
-        run: npm install
-
-      - name: Ejecutando el script de sincronización
-        run: node sync.js
+      - name: Buscar y ejecutar sync.js
+        run: |
+          # Este comando busca el archivo sync.js sin importar en qué carpeta esté
+          FILE_PATH=$(find . -name "sync.js" -not -path "*/node_modules/*" | head -n 1)
+          if [ -z "$FILE_PATH" ]; then
+            echo "❌ ERROR: No se encontró el archivo sync.js en ningún lado"
+            exit 1
+          fi
+          
+          DIR_PATH=$(dirname "$FILE_PATH")
+          echo "📂 Archivo encontrado en: $FILE_PATH"
+          echo "📍 Entrando a la carpeta: $DIR_PATH"
+          
+          cd "$DIR_PATH"
+          npm install
+          node $(basename "$FILE_PATH")
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
