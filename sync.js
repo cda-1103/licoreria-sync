@@ -1,18 +1,20 @@
 const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch');
 
+// Configuración de variables de entorno (GitHub Secrets)
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const FINA_TOKEN = process.env.FINA_TOKEN;
 
+// Inicialización de Supabase
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function sincronizarInventario() {
-  console.log("🚀 Iniciando sincronización de depuración...");
+  console.log("🚀 Iniciando sincronización profesional...");
 
   try {
     const pageSize = 50;
-    const totalPaginas = 1; // Probemos primero con 1 página para diagnosticar
+    const totalPaginas = 9; // Total para cubrir tus 431 productos
 
     for (let pagina = 1; pagina <= totalPaginas; pagina++) {
       console.log(`📡 Consultando Fina - Página ${pagina}...`);
@@ -30,54 +32,54 @@ async function sincronizarInventario() {
       });
 
       if (!response.ok) {
-        console.error(`❌ Error de Red Fina: ${response.status} ${response.statusText}`);
-        return;
+        console.error(`❌ Error en Fina (Página ${pagina}): ${response.status}`);
+        continue;
       }
 
       const json = await response.json();
       
-      // LOG DE DIAGNÓSTICO: ¿Qué nos trae Fina?
-      console.log(`📦 Productos recibidos de Fina: ${json.data ? json.data.length : 0}`);
-      
       if (!json.data || json.data.length === 0) {
-        console.log("⚠️ Fina no devolvió productos. Revisa si el TOKEN sigue vigente.");
-        return;
+        console.log(`⚠️ No hay más datos en la página ${pagina}.`);
+        break;
       }
 
+      // Localizamos el canal de ventas "Principal"
       const canalPrincipal = json.salesChannels?.find(c => c.name === "Principal");
-      if (!canalPrincipal) {
-        console.log("⚠️ No se encontró el canal 'Principal'. Canales disponibles:", json.salesChannels?.map(c => c.name));
-      }
 
+      // MAPEADO EXACTO A TU TABLA
       const updates = json.data.map(prod => {
         const precioInfo = canalPrincipal?.items?.find(i => i.referenceId === prod._id);
+        
         return {
-          fina_id: prod._id,
-          nombre: prod.name,
-          stock: prod.amount || 0,
-          precio_usd: precioInfo ? precioInfo.sellingPrice : 0,
-          categoria_nombre: prod.category || 'Varios',
-          actualizado_en: new Date().toISOString()
+          sku: prod._id,               // Mapeamos el _id de Fina a tu columna 'sku'
+          nombre: prod.name,           // Columna 'nombre'
+          descripcion: prod.description || '', // Columna 'descripcion'
+          precio_usd: precioInfo ? precioInfo.sellingPrice : 0, // Columna 'precio_usd'
+          stock: prod.amount || 0,     // Columna 'stock'
+          actualizado_en: new Date().toISOString() // Columna 'actualizado_en'
         };
       });
 
-      console.log(`📤 Intentando subir ${updates.length} productos a Supabase...`);
+      console.log(`📤 Sincronizando ${updates.length} productos en Supabase...`);
 
-      // LOG DE DIAGNÓSTICO: Resultado de Supabase
+      // Operación UPSERT basada en tu restricción UNIQUE(sku)
       const { data, error } = await supabase
         .from('productos')
-        .upsert(updates, { onConflict: 'fina_id' })
-        .select(); // Pedimos que nos devuelva lo que insertó para confirmar
+        .upsert(updates, { onConflict: 'sku' })
+        .select();
 
       if (error) {
-        console.error("❌ ERROR EN SUPABASE:", error);
+        console.error(`❌ ERROR EN SUPABASE (Pág ${pagina}):`, error.message);
       } else {
-        console.log(`✅ ¡Éxito! Se procesaron ${data.length} filas en la base de datos.`);
+        console.log(`✅ Página ${pagina} sincronizada. Productos en lote: ${data.length}`);
       }
     }
 
+    console.log("🏁 ¡Sincronización terminada con éxito!");
+
   } catch (error) {
     console.error("💥 ERROR CRÍTICO:", error.message);
+    process.exit(1);
   }
 }
 
