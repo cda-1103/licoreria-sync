@@ -10,15 +10,18 @@ async function sincronizarTodo() {
     const response = await fetch('https://api.finapartner.com/api/inventory?pageSize=500', {
       headers: { 
         'X-Access-Token': process.env.FINA_TOKEN,
-        'Accept': 'application/json'
+        'Accept': 'application/json',
+        'Origin': 'https://bbtiendadelicores.finapartner.com',
+        'Referer': 'https://bbtiendadelicores.finapartner.com/'
       }
     });
 
     const json = await response.json();
     
-    // Verificamos si hay datos
+    // LOG DE DEPURACIÓN: Si no hay datos, mostramos qué respondió la API exactamente
     if (!json.data || json.data.length === 0) {
-      console.log("⚠️ La API de Fina no devolvió productos. Revisa el TOKEN.");
+      console.log("⚠️ Fina no devolvió productos.");
+      console.log("🔍 Respuesta completa de la API:", JSON.stringify(json, null, 2));
       return;
     }
 
@@ -32,7 +35,7 @@ async function sincronizarTodo() {
       .from('categorias')
       .upsert(nombresCategorias.map(n => ({ 
         nombre: n,
-        slug: n.toLowerCase().replace(/\s+/g, '-') // Creamos un slug amigable
+        slug: n.toLowerCase().replace(/\s+/g, '-') 
       })), { onConflict: 'nombre' })
       .select();
 
@@ -47,7 +50,7 @@ async function sincronizarTodo() {
         sku: prod._id,
         nombre: prod.name,
         descripcion: prod.description || '',
-        precio_usd: prod.sellingPrice || 0, // En tu JSON viene directo como sellingPrice
+        precio_usd: prod.sellingPrice || 0,
         stock: prod.amount || 0,
         categoria_id: catMap[prod.category || 'Sin Categoría'],
         actualizado_en: new Date().toISOString()
