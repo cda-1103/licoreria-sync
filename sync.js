@@ -1,86 +1,60 @@
 const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch');
 
-// Configuración de variables de entorno (GitHub Secrets)
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const FINA_TOKEN = process.env.FINA_TOKEN;
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// Inicialización de Supabase
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-async function sincronizarInventario() {
-  console.log("🚀 Iniciando sincronización profesional...");
-
+async function sincronizarTodo() {
   try {
-    const pageSize = 50;
-    const totalPaginas = 9; // Total para cubrir tus 431 productos
+    const response = await fetch('https://api.finapartner.com/api/inventory?pageSize=500', {
+      headers: { 'X-Access-Token': process.env.FINA_TOKEN }
+    });
+    const json = await response.json();
+    if (!json.data) return;
 
-    for (let pagina = 1; pagina <= totalPaginas; pagina++) {
-      console.log(`📡 Consultando Fina - Página ${pagina}...`);
+    // --- PASO 1: Sincronizar Categorías ---
+    // Extraemos todos los nombres de categorías únicos que vienen de Fina
+    const nombresCategorias = [...new Set(json.data.map(p => p.category || 'Varios'))];
+    
+    console.log(`📂 Sincronizando ${nombresCategorias.length} categorías...`);
+    
+    const { data: catInsertadas } = await supabase
+      .from('categorias')
+      .upsert(nombresCategorias.map(n => ({ nombre: n })), { onConflict: 'nombre' })
+      .select();
 
-      const url = `https://api.finapartner.com/api/inventory?currentPage=${pagina}&pageSize=${pageSize}&sortedColumn=updatedAt&sortedDirection=desc`;
+    // Creamos un "mapa" para convertir nombre -> ID rápido
+    const catMap = {};
+    catInsertadas.forEach(c => catMap[c.nombre] = c.id);
 
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'X-Access-Token': FINA_TOKEN,
-          'Accept': 'application/json',
-          'Origin': 'https://bbtiendadelicores.finapartner.com',
-          'Referer': 'https://bbtiendadelicores.finapartner.com/'
-        }
-      });
-
-      if (!response.ok) {
-        console.error(`❌ Error en Fina (Página ${pagina}): ${response.status}`);
-        continue;
-      }
-
-      const json = await response.json();
+    // --- PASO 2: Sincronizar Productos ---
+    const canalPrincipal = json.salesChannels?.find(c => c.name === "Principal");
+    
+    const updates = json.data.map(prod => {
+      const precioInfo = canalPrincipal?.items?.find(i => i.referenceId === prod._id);
+      const nombreCat = prod.category || 'Varios';
       
-      if (!json.data || json.data.length === 0) {
-        console.log(`⚠️ No hay más datos en la página ${pagina}.`);
-        break;
-      }
+      return {
+        sku: prod._id,
+        nombre: prod.name,
+        stock: prod.amount || 0,
+        precio_usd: precioInfo ? precioInfo.sellingPrice : 0,
+        categoria_id: catMap[nombreCat], // <-- AQUÍ SE HACE LA MAGIA
+        actualizado_en: new Date().toISOString()
+      };
+    });
 
-      // Localizamos el canal de ventas "Principal"
-      const canalPrincipal = json.salesChannels?.find(c => c.name === "Principal");
+    console.log(`📤 Subiendo ${updates.length} productos vinculados...`);
+    
+    const { error } = await supabase
+      .from('productos')
+      .upsert(updates, { onConflict: 'sku' });
 
-      // MAPEADO EXACTO A TU TABLA
-      const updates = json.data.map(prod => {
-        const precioInfo = canalPrincipal?.items?.find(i => i.referenceId === prod._id);
-        
-        return {
-          sku: prod._id,               // Mapeamos el _id de Fina a tu columna 'sku'
-          nombre: prod.name,           // Columna 'nombre'
-          descripcion: prod.description || '', // Columna 'descripcion'
-          precio_usd: precioInfo ? precioInfo.sellingPrice : 0, // Columna 'precio_usd'
-          stock: prod.amount || 0,     // Columna 'stock'
-          actualizado_en: new Date().toISOString() // Columna 'actualizado_en'
-        };
-      });
+    if (error) throw error;
+    console.log("✅ Sincronización completa: Categorías y Productos alineados.");
 
-      console.log(`📤 Sincronizando ${updates.length} productos en Supabase...`);
-
-      // Operación UPSERT basada en tu restricción UNIQUE(sku)
-      const { data, error } = await supabase
-        .from('productos')
-        .upsert(updates, { onConflict: 'sku' })
-        .select();
-
-      if (error) {
-        console.error(`❌ ERROR EN SUPABASE (Pág ${pagina}):`, error.message);
-      } else {
-        console.log(`✅ Página ${pagina} sincronizada. Productos en lote: ${data.length}`);
-      }
-    }
-
-    console.log("🏁 ¡Sincronización terminada con éxito!");
-
-  } catch (error) {
-    console.error("💥 ERROR CRÍTICO:", error.message);
-    process.exit(1);
+  } catch (err) {
+    console.error("❌ Error:", err.message);
   }
 }
 
-sincronizarInventario();
+sincronizarTodo();
