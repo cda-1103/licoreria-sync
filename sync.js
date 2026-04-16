@@ -4,56 +4,68 @@ const fetch = require('node-fetch');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 async function sincronizarTodo() {
+  console.log("📡 Conectando con la API de Fina...");
+  
   try {
     const response = await fetch('https://api.finapartner.com/api/inventory?pageSize=500', {
-      headers: { 'X-Access-Token': process.env.FINA_TOKEN }
+      headers: { 
+        'X-Access-Token': process.env.FINA_TOKEN,
+        'Accept': 'application/json'
+      }
     });
-    const json = await response.json();
-    if (!json.data) return;
 
-    // --- PASO 1: Sincronizar Categorías ---
-    // Extraemos todos los nombres de categorías únicos que vienen de Fina
-    const nombresCategorias = [...new Set(json.data.map(p => p.category || 'Varios'))];
+    const json = await response.json();
     
+    // Verificamos si hay datos
+    if (!json.data || json.data.length === 0) {
+      console.log("⚠️ La API de Fina no devolvió productos. Revisa el TOKEN.");
+      return;
+    }
+
+    console.log(`📦 Encontrados ${json.data.length} productos en Fina.`);
+
+    // --- PASO 1: Categorías ---
+    const nombresCategorias = [...new Set(json.data.map(p => p.category || 'Sin Categoría'))];
     console.log(`📂 Sincronizando ${nombresCategorias.length} categorías...`);
     
-    const { data: catInsertadas } = await supabase
+    const { data: catInsertadas, error: catError } = await supabase
       .from('categorias')
-      .upsert(nombresCategorias.map(n => ({ nombre: n })), { onConflict: 'nombre' })
+      .upsert(nombresCategorias.map(n => ({ 
+        nombre: n,
+        slug: n.toLowerCase().replace(/\s+/g, '-') // Creamos un slug amigable
+      })), { onConflict: 'nombre' })
       .select();
 
-    // Creamos un "mapa" para convertir nombre -> ID rápido
+    if (catError) throw catError;
+
     const catMap = {};
     catInsertadas.forEach(c => catMap[c.nombre] = c.id);
 
-    // --- PASO 2: Sincronizar Productos ---
-    const canalPrincipal = json.salesChannels?.find(c => c.name === "Principal");
-    
+    // --- PASO 2: Productos ---
     const updates = json.data.map(prod => {
-      const precioInfo = canalPrincipal?.items?.find(i => i.referenceId === prod._id);
-      const nombreCat = prod.category || 'Varios';
-      
       return {
         sku: prod._id,
         nombre: prod.name,
+        descripcion: prod.description || '',
+        precio_usd: prod.sellingPrice || 0, // En tu JSON viene directo como sellingPrice
         stock: prod.amount || 0,
-        precio_usd: precioInfo ? precioInfo.sellingPrice : 0,
-        categoria_id: catMap[nombreCat], // <-- AQUÍ SE HACE LA MAGIA
+        categoria_id: catMap[prod.category || 'Sin Categoría'],
         actualizado_en: new Date().toISOString()
       };
     });
 
-    console.log(`📤 Subiendo ${updates.length} productos vinculados...`);
+    console.log(`📤 Actualizando ${updates.length} productos en Supabase...`);
     
-    const { error } = await supabase
+    const { error: prodError } = await supabase
       .from('productos')
       .upsert(updates, { onConflict: 'sku' });
 
-    if (error) throw error;
-    console.log("✅ Sincronización completa: Categorías y Productos alineados.");
+    if (prodError) throw prodError;
+    
+    console.log("✅ ¡Todo sincronizado perfectamente!");
 
   } catch (err) {
-    console.error("❌ Error:", err.message);
+    console.error("❌ ERROR CRÍTICO:", err.message);
   }
 }
 
