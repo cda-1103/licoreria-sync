@@ -79,8 +79,8 @@ async function sincronizarTodo() {
         sku: (prod.SKU && prod.SKU !== "") ? prod.SKU : prod._id, 
         nombre: prod.name,
         descripcion: prod.description || '',
-        precio_usd: prod.sellingPrice || 0, [cite: 31, 139]
-        stock: prod.totalStock || 0, [cite: 123, 216]
+        precio_usd: prod.sellingPrice || 0,
+        stock: prod.totalStock || 0,
         categoria_id: catMap[nombreCatKey],
         actualizado_en: new Date().toISOString()
       };
