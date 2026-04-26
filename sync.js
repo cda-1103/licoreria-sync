@@ -11,7 +11,7 @@ async function sincronizarTodo() {
   }
 
   // URL con filtros. Prueba cambiar hideOutOfStock=false si sigue saliendo vacío.
-  const urlApi = 'https://api.finapartner.com/api/pos/sales/69ee728889942f65ea447c4e?hideOutOfStock=true&location=local';
+  const urlApi = 'https://api.finapartner.com/api/pos/salesChannels/688913251860c52c656c4f8d?hideOutOfStock=true&location=local';
 
   console.log("📡 Conectando con la API de Fina...");
 
