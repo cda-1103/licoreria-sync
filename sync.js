@@ -5,46 +5,45 @@ const fetch = require('node-fetch');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 async function sincronizarTodo() {
-  // ID del canal "Principal" de B.B.T.
-  const ID_CANAL_PRINCIPAL = '688913251860c52c656c4f8d'; 
-  
-  // Cambiamos a /api/products que es el endpoint estándar de catálogo
-  const urlApi = 'https://api.finapartner.com/api/products?pageSize=1000';
+  // Volvemos a la URL original que te funcionaba
+  const urlApi = 'https://api.finapartner.com/api/inventory?pageSize=500';
 
-  if (!process.env.FINA_TOKEN) {
-    console.error("❌ ERROR: FINA_TOKEN no definido.");
-    return;
-  }
-
-  console.log("📡 Conectando con el Catálogo de Productos de Fina...");
+  console.log("📡 Conectando con la API de Inventario de Fina...");
 
   try {
     const response = await fetch(urlApi, {
       headers: {
         'X-Access-Token': process.env.FINA_TOKEN,
-        'Accept': 'application/json'
+        'Accept': 'application/json',
+        'Origin': 'https://bbtiendadelicores.finapartner.com',
+        'Referer': 'https://bbtiendadelicores.finapartner.com/'
       }
     });
 
     const json = await response.json();
 
-    // Fina suele enviar los productos en json.data o json.data.docs
-    const productosFina = json.data?.docs || json.data || [];
-
-    if (productosFina.length === 0) {
-      console.log("⚠️ No se encontraron productos en /api/products.");
-      console.log("Estructura recibida:", JSON.stringify(json).substring(0, 300));
+    // Verificamos que json.data sea un array
+    if (!json.data || !Array.isArray(json.data)) {
+      console.log("⚠️ No se recibió un array en json.data");
+      console.log("Respuesta recibida:", JSON.stringify(json).substring(0, 200));
       return;
     }
 
-    console.log(`📦 Encontrados ${productosFina.length} productos.`);
+    const productosFina = json.data;
+    console.log(`📦 Encontrados ${productosFina.length} productos en Fina.`);
 
     // --- PASO 1: Categorías ---
     const categoriasUnicas = new Map();
     productosFina.forEach(p => {
       const nombre = (p.category || 'Sin Categoría').trim();
-      const slug = nombre.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-      if (!categoriasUnicas.has(slug)) categoriasUnicas.set(slug, nombre);
+      const slug = nombre.toLowerCase()
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-]/g, '');
+
+      if (!categoriasUnicas.has(slug)) {
+        categoriasUnicas.set(slug, nombre);
+      }
     });
 
     const { data: finalCats, error: catError } = await supabase
@@ -53,44 +52,36 @@ async function sincronizarTodo() {
       .select();
 
     if (catError) throw catError;
-    const catMap = {};
-    finalCats.forEach(c => { catMap[c.nombre.toLowerCase().trim()] = c.id; });
 
-    // --- PASO 2: Productos (Precios exactos y sin duplicados) ---
+    const catMap = {};
+    finalCats.forEach(c => {
+      catMap[c.nombre.toLowerCase().trim()] = c.id;
+    });
+
+    // --- PASO 2: Productos (Con filtro de duplicados por nombre) ---
     const productosVistos = new Set();
     const updates = [];
 
     productosFina.forEach(prod => {
-      // 1. Filtro de nombres duplicados (Para evitar las 2 etiquetas negras)
+      // Filtro para evitar "Etiqueta Negra" duplicada
       const nombreNormalizado = prod.name.trim().toLowerCase();
       if (productosVistos.has(nombreNormalizado)) return;
       productosVistos.add(nombreNormalizado);
 
-      // 2. Búsqueda de precio en el canal Principal
-      let precioCorrecto = prod.sellingPrice || 0;
-      if (prod.salesChannels && prod.salesChannels.length > 0) {
-        const configCanal = prod.salesChannels.find(c => c.salesChannelId === ID_CANAL_PRINCIPAL);
-        if (configCanal && configCanal.sellingPrice !== undefined) {
-          precioCorrecto = configCanal.sellingPrice;
-        }
-      }
-
-      // 3. Stock y Categoría
-      const stockActual = prod.totalStock !== undefined ? prod.totalStock : (prod.amount || 0);
       const catKey = (prod.category || 'Sin Categoría').toLowerCase().trim();
 
       updates.push({
-        sku: (prod.SKU && prod.SKU !== "") ? prod.SKU : prod._id,
+        sku: prod.SKU || prod._id, // Si no tiene SKU manual, usamos el ID de Fina
         nombre: prod.name,
         descripcion: prod.description || '',
-        precio_usd: precioCorrecto,
-        stock: stockActual,
+        precio_usd: prod.sellingPrice || 0,
+        stock: prod.amount || 0, // En /inventory el stock es 'amount'
         categoria_id: catMap[catKey] || catMap['sin categoría'],
         actualizado_en: new Date().toISOString()
       });
     });
 
-    console.log(`📤 Actualizando ${updates.length} productos en Supabase...`);
+    console.log(`📤 Sincronizando ${updates.length} productos únicos en Supabase...`);
 
     const { error: prodError } = await supabase
       .from('productos')
@@ -98,7 +89,7 @@ async function sincronizarTodo() {
 
     if (prodError) throw prodError;
 
-    console.log("✅ ¡Sincronización exitosa!");
+    console.log("✅ ¡Sincronización terminada!");
 
   } catch (err) {
     console.error("❌ ERROR CRÍTICO:", err.message);
