@@ -1,13 +1,20 @@
+require('dotenv').config(); // Carga las variables del .env para evitar el error de headers
 const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 async function sincronizarTodo() {
-  console.log("📡 Conectando con la API de Fina...");
+  // Validación de seguridad para el Token
+  if (!process.env.FINA_TOKEN) {
+    console.error("❌ ERROR: FINA_TOKEN no definido. Verifica tu archivo .env.");
+    return;
+  }
+
+  console.log("📡 Conectando con la API de Fina (Estructura de Canal de Ventas)...");
   
   try {
-    const response = await fetch('https://api.finapartner.com/api/inventory?pageSize=500', {
+    const response = await fetch('https://api.finapartner.com/api/pos/sales/69ee728889942f65ea447c4e?hideOutOfStock=true&location=local', {
       headers: { 
         'X-Access-Token': process.env.FINA_TOKEN,
         'Accept': 'application/json',
@@ -18,81 +25,68 @@ async function sincronizarTodo() {
 
     const json = await response.json();
     
-    if (!json.data || json.data.length === 0) {
-      console.log("⚠️ Fina no devolvió productos.");
-      console.log("🔍 Respuesta completa:", JSON.stringify(json, null, 2));
+    // Accedemos a los productos según la nueva estructura 
+    const productosFina = json.data?.salesChannel?.products;
+
+    if (!productosFina || productosFina.length === 0) {
+      console.log("⚠️ No se encontraron productos en data.salesChannel.products");
       return;
     }
 
-    console.log(`📦 Encontrados ${json.data.length} productos en Fina.`);
+    console.log(`📦 Encontrados ${productosFina.length} productos en Fina.`);
 
-    // --- PASO 1: Procesar Categorías sin Duplicados de Slug ---
-    const rawCategories = json.data.map(p => (p.category || 'Sin Categoría').trim());
-    
-    // Usamos un Map para asegurar que cada "slug" sea único
+    // --- PASO 1: Procesar Categorías ---
     const categoriasUnicas = new Map();
     
-    rawCategories.forEach(nombre => {
-      // Normalizamos el slug: minúsculas, quitamos espacios extras y caracteres raros
+    productosFina.forEach(p => {
+      // Si la categoría está vacía, usamos 'Sin Categoría' [cite: 5904]
+      const nombre = (p.category && p.category.trim() !== "") ? p.category.trim() : 'Sin Categoría';
       const slug = nombre.toLowerCase()
-                         .trim()
                          .replace(/\s+/g, '-')
                          .replace(/[^a-z0-9-]/g, '');
       
-      // Si el slug no existe en nuestro mapa, lo agregamos
-      // Esto evita que "Ron" y "RON" intenten crear dos slugs iguales
       if (!categoriasUnicas.has(slug)) {
         categoriasUnicas.set(slug, nombre);
       }
     });
 
-    console.log(`📂 Sincronizando ${categoriasUnicas.size} categorías únicas...`);
-    
     const arrayCategorias = Array.from(categoriasUnicas).map(([slug, nombre]) => ({
-      nombre: nombre,
-      slug: slug
+      nombre,
+      slug
     }));
 
-    const { data: catInsertadas, error: catError } = await supabase
+    console.log(`📂 Sincronizando ${arrayCategorias.length} categorías...`);
+    const { data: finalCats, error: catError } = await supabase
       .from('categorias')
-      .upsert(arrayCategorias, { onConflict: 'nombre' })
+      .upsert(arrayCategorias, { onConflict: 'slug' })
       .select();
 
-    if (catError) {
-      // Si falla por slug, intentamos upsert por slug
-      console.log("⚠️ Falló por nombre, reintentando por slug...");
-      const { data: catRetry, error: retryError } = await supabase
-        .from('categorias')
-        .upsert(arrayCategorias, { onConflict: 'slug' })
-        .select();
-      
-      if (retryError) throw retryError;
-      var finalCats = catRetry;
-    } else {
-      var finalCats = catInsertadas;
-    }
+    if (catError) throw catError;
 
-    // Mapa para vincular productos
     const catMap = {};
     finalCats.forEach(c => {
       catMap[c.nombre.toLowerCase().trim()] = c.id;
     });
 
-    // --- PASO 2: Productos ---
-    const updates = json.data.map(prod => {
-      const nombreCatKey = (prod.category || 'Sin Categoría').toLowerCase().trim();
+    // --- PASO 2: Procesar Productos ---
+    const updates = productosFina.map(prod => {
+      const nombreCatKey = (prod.category && prod.category.trim() !== "") 
+                           ? prod.category.toLowerCase().trim() 
+                           : 'sin categoría';
+
       return {
-        sku: prod._id,
+        // Usamos SKU si existe, si no, el _id único de Fina [cite: 21, 26]
+        sku: (prod.SKU && prod.SKU !== "") ? prod.SKU : prod._id, 
         nombre: prod.name,
         descripcion: prod.description || '',
-        precio_usd: prod.sellingPrice || 0,
-        stock: prod.amount || 0,
+        precio_usd: prod.sellingPrice || 0, [cite: 31, 139]
+        stock: prod.totalStock || 0, [cite: 123, 216]
         categoria_id: catMap[nombreCatKey],
         actualizado_en: new Date().toISOString()
       };
     });
 
-    console.log(`📤 Actualizando ${updates.length} productos...`);
+    console.log(`📤 Actualizando ${updates.length} productos en Supabase...`);
     
     const { error: prodError } = await supabase
       .from('productos')
