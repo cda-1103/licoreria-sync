@@ -5,10 +5,18 @@ const fetch = require('node-fetch');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 async function sincronizarTodo() {
+  // ID del canal "Principal" de B.B.T.
   const ID_CANAL_PRINCIPAL = '688913251860c52c656c4f8d'; 
-  const urlApi = 'https://api.finapartner.com/api/inventory?pageSize=500';
+  
+  // Cambiamos a /api/products que es el endpoint estándar de catálogo
+  const urlApi = 'https://api.finapartner.com/api/products?pageSize=1000';
 
-  console.log("📡 Conectando con la API de Inventario de Fina...");
+  if (!process.env.FINA_TOKEN) {
+    console.error("❌ ERROR: FINA_TOKEN no definido.");
+    return;
+  }
+
+  console.log("📡 Conectando con el Catálogo de Productos de Fina...");
 
   try {
     const response = await fetch(urlApi, {
@@ -20,27 +28,18 @@ async function sincronizarTodo() {
 
     const json = await response.json();
 
-    // --- DIAGNÓSTICO DE ESTRUCTURA ---
-    // Intentamos encontrar dónde están los productos (puede ser json.data o json.data.docs)
-    let productosFina = [];
-    if (Array.isArray(json.data)) {
-      productosFina = json.data;
-    } else if (json.data && Array.isArray(json.data.docs)) {
-      productosFina = json.data.docs;
-    } else if (json.data && Array.isArray(json.data.products)) {
-      productosFina = json.data.products;
-    }
+    // Fina suele enviar los productos en json.data o json.data.docs
+    const productosFina = json.data?.docs || json.data || [];
 
     if (productosFina.length === 0) {
-      console.log("⚠️ No se detectó un array de productos en json.data");
-      console.log("🔍 ESTRUCTURA REAL RECIBIDA:", JSON.stringify(json, null, 2).substring(0, 500) + "..."); 
+      console.log("⚠️ No se encontraron productos en /api/products.");
+      console.log("Estructura recibida:", JSON.stringify(json).substring(0, 300));
       return;
     }
-    // --- FIN DIAGNÓSTICO ---
 
     console.log(`📦 Encontrados ${productosFina.length} productos.`);
 
-    // 1. Categorías
+    // --- PASO 1: Categorías ---
     const categoriasUnicas = new Map();
     productosFina.forEach(p => {
       const nombre = (p.category || 'Sin Categoría').trim();
@@ -57,40 +56,48 @@ async function sincronizarTodo() {
     const catMap = {};
     finalCats.forEach(c => { catMap[c.nombre.toLowerCase().trim()] = c.id; });
 
-    // 2. Productos
+    // --- PASO 2: Productos (Precios exactos y sin duplicados) ---
     const productosVistos = new Set();
     const updates = [];
 
     productosFina.forEach(prod => {
+      // 1. Filtro de nombres duplicados (Para evitar las 2 etiquetas negras)
       const nombreNormalizado = prod.name.trim().toLowerCase();
       if (productosVistos.has(nombreNormalizado)) return;
       productosVistos.add(nombreNormalizado);
 
-      // Buscamos el precio del canal B.B.T. Principal
+      // 2. Búsqueda de precio en el canal Principal
       let precioCorrecto = prod.sellingPrice || 0;
-      if (prod.salesChannels) {
+      if (prod.salesChannels && prod.salesChannels.length > 0) {
         const configCanal = prod.salesChannels.find(c => c.salesChannelId === ID_CANAL_PRINCIPAL);
-        if (configCanal) precioCorrecto = configCanal.sellingPrice;
+        if (configCanal && configCanal.sellingPrice !== undefined) {
+          precioCorrecto = configCanal.sellingPrice;
+        }
       }
 
-      // El stock en esta API puede venir como 'amount' o 'totalStock'
-      const stockActual = prod.amount !== undefined ? prod.amount : (prod.totalStock || 0);
+      // 3. Stock y Categoría
+      const stockActual = prod.totalStock !== undefined ? prod.totalStock : (prod.amount || 0);
+      const catKey = (prod.category || 'Sin Categoría').toLowerCase().trim();
 
       updates.push({
-        sku: prod.SKU || prod._id,
+        sku: (prod.SKU && prod.SKU !== "") ? prod.SKU : prod._id,
         nombre: prod.name,
         descripcion: prod.description || '',
         precio_usd: precioCorrecto,
         stock: stockActual,
-        categoria_id: catMap[(prod.category || 'Sin Categoría').toLowerCase().trim()],
+        categoria_id: catMap[catKey] || catMap['sin categoría'],
         actualizado_en: new Date().toISOString()
       });
     });
 
-    console.log(`📤 Actualizando ${updates.length} productos únicos en Supabase...`);
-    const { error: prodError } = await supabase.from('productos').upsert(updates, { onConflict: 'sku' });
-    
+    console.log(`📤 Actualizando ${updates.length} productos en Supabase...`);
+
+    const { error: prodError } = await supabase
+      .from('productos')
+      .upsert(updates, { onConflict: 'sku' });
+
     if (prodError) throw prodError;
+
     console.log("✅ ¡Sincronización exitosa!");
 
   } catch (err) {
